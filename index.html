@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Hate Speech Detector</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 900px; }
+  textarea { width: 100%; min-height: 120px; font-size: 16px; padding: 10px; }
+  button { padding: 10px 14px; font-size: 15px; }
+  .pill { padding: 6px 12px; border-radius: 999px; font-weight: bold; display: inline-block; }
+  .ok { background: #e6f6ec; color: #1a7f37; }
+  .bad { background: #fde7e9; color: #a61e2a; }
+  .mono { font-family: monospace; }
+</style>
+</head>
+
+<body>
+<h1>🛡️ Hate Speech Detector</h1>
+<p>Hybrid moderation: rules + intent NLP</p>
+
+<textarea id="text"></textarea><br><br>
+
+<label>Decision threshold:
+  <span id="thrVal" class="mono">0.60</span>
+</label><br>
+<input id="thr" type="range" min="0" max="1" step="0.01" value="0.60"><br><br>
+
+<button id="analyze">Analyze</button>
+<p id="status">Model not loaded</p>
+
+<div id="result" style="display:none;">
+  <span id="label" class="pill"></span>
+  <p id="score" class="mono"></p>
+  <p id="explain"></p>
+</div>
+
+<script type="module">
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.9.0';
+
+/* ---------- RULES ---------- */
+
+const SLURS = ['retard','idiot','moron','bitch','slut','faggot','nigger'];
+
+const SELF_HARM_REGEX = [
+  /kill\s+yourself/i,
+  /go\s+die/i,
+  /end\s+yourself/i
+];
+
+function hasSlur(t){ return SLURS.some(w=>t.includes(w)); }
+function hasSelfHarmPhrase(t){ return SELF_HARM_REGEX.some(r=>r.test(t)); }
+
+/* ---------- UI ---------- */
+
+const textEl = document.getElementById('text');
+const btn = document.getElementById('analyze');
+const thrEl = document.getElementById('thr');
+const thrVal = document.getElementById('thrVal');
+const status = document.getElementById('status');
+const result = document.getElementById('result');
+const label = document.getElementById('label');
+const score = document.getElementById('score');
+const explain = document.getElementById('explain');
+
+thrEl.oninput = () => thrVal.textContent = Number(thrEl.value).toFixed(2);
+
+/* ---------- MODEL ---------- */
+
+let clf=null;
+async function model(){
+  if(clf) return clf;
+  status.textContent='Loading model...';
+  clf=await pipeline('zero-shot-classification','Xenova/distilbert-base-uncased-mnli');
+  status.textContent='Model loaded';
+  return clf;
+}
+
+/* ---------- MAIN ---------- */
+
+btn.onclick = async () => {
+  const text=textEl.value.trim().toLowerCase();
+  if(!text) return;
+
+  // 1️⃣ Explicit self-harm
+  if(hasSelfHarmPhrase(text)){
+    flag('Direct self-harm instruction detected');
+    return;
+  }
+
+  // 2️⃣ Slurs
+  if(hasSlur(text)){
+    flag('Slur or explicit abuse detected');
+    return;
+  }
+
+  const pipe=await model();
+  const threshold=Number(thrEl.value);
+
+  // 3️⃣ INTENT CHECK (KEY FIX)
+  const intentLabels=[
+    'encouraging self harm',
+    'dehumanizing or humiliating language',
+    'harassment or bullying',
+    'neutral statement'
+  ];
+
+  const intent=await pipe(text,intentLabels,{multi_label:false});
+  const topIntent=intent.labels[0];
+  const topScore=intent.scores[0];
+
+  if(
+    (topIntent!=='neutral statement') &&
+    topScore>=threshold
+  ){
+    flag(`Intent detected: ${topIntent} (${(topScore*100).toFixed(1)}%)`);
+    return;
+  }
+
+  // 4️⃣ Hate/abuse fallback
+  const res=await pipe(text,[
+    'hate speech',
+    'abusive language',
+    'neutral statement'
+  ],{multi_label:false});
+
+  const abuseScore=res.scores[res.labels.indexOf('abusive language')];
+
+  if(abuseScore>=threshold){
+    flag('Abusive language detected via NLP');
+    return;
+  }
+
+  ok();
+};
+
+function flag(reason){
+  label.textContent='🚫 HATE / ABUSE';
+  label.className='pill bad';
+  score.textContent=reason;
+  explain.textContent='Hybrid rule + intent-based NLP moderation.';
+  result.style.display='block';
+}
+
+function ok(){
+  label.textContent='✅ NOT HATE';
+  label.className='pill ok';
+  score.textContent='No harmful intent detected';
+  explain.textContent='Checked using rules and intent classification.';
+  result.style.display='block';
+}
+</script>
+</body>
+</html>
+
+
